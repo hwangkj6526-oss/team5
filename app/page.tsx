@@ -2,150 +2,16 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-type SweatLevel = "low" | "medium" | "high";
-type PlanStatus = "planned" | "done";
-type Plan = {
-  id: string;
-  sport: string;
-  duration: number;
-  weight: number;
-  temperature: number;
-  sweat: SweatLevel;
-  water: number;
-  electrolyte: number;
-  before: number;
-  during: number;
-  after: number;
-  status: PlanStatus;
-  createdAt: string;
-};
-type ChatMessage = { id: string; content: string; createdAt: string };
-
-const PLAN_KEY = "hydro-pace-plans";
-const MESSAGE_KEY = "hydro-pace-messages";
-const sweatLabels: Record<SweatLevel, string> = { low: "적게 흘려요", medium: "보통이에요", high: "많이 흘려요" };
-
-function calculatePlan(input: Omit<Plan, "id" | "water" | "electrolyte" | "before" | "during" | "after" | "status" | "createdAt">) {
-  const sweatRate = input.sweat === "high" ? 0.8 : input.sweat === "medium" ? 0.6 : 0.4;
-  const heatBonus = input.temperature >= 28 ? 0.1 : input.temperature <= 12 ? -0.05 : 0;
-  const bodyBonus = input.weight >= 80 ? 0.05 : input.weight < 55 ? -0.05 : 0;
-  const hourlyLitres = Math.min(0.9, Math.max(0.35, sweatRate + heatBonus + bodyBonus));
-  const water = Math.round(hourlyLitres * (input.duration / 60) * 1000 / 10) * 10;
-  const electrolyte = input.duration >= 60 || input.sweat === "high" || input.temperature >= 28 ? Math.round(water * 0.6) : 0;
-  return { water, electrolyte, before: Math.round(water * 0.2 / 10) * 10, during: Math.round(water * 0.6 / 10) * 10, after: Math.round(water * 0.2 / 10) * 10 };
-}
-
-function normalizePlan(plan: Plan): Plan {
-  const { water, electrolyte, before, during, after } = calculatePlan(plan);
-  return { ...plan, water, electrolyte, before, during, after };
-}
-
-export default function Home() {
-  const [tab, setTab] = useState<"plan" | "history" | "chat">("plan");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [plans, setPlans] = useState<Plan[]>([]);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [selected, setSelected] = useState<Plan | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [form, setForm] = useState({ sport: "러닝", duration: "60", weight: "65", temperature: "22", sweat: "medium" as SweatLevel });
-  const [message, setMessage] = useState("");
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void Promise.all([fetch("/api/plans"), fetch("/api/messages")])
-        .then(async ([planResponse, messageResponse]) => {
-          if (!planResponse.ok || !messageResponse.ok) throw new Error();
-          const [remotePlans, remoteMessages] = await Promise.all([planResponse.json(), messageResponse.json()]);
-          const storedPlans: Plan[] = JSON.parse(localStorage.getItem(PLAN_KEY) || "[]");
-          const normalizedPlans = (remotePlans.length ? remotePlans : storedPlans).map(normalizePlan);
-          setPlans(normalizedPlans);
-          localStorage.setItem(PLAN_KEY, JSON.stringify(normalizedPlans));
-          setMessages(remoteMessages.length ? remoteMessages : JSON.parse(localStorage.getItem(MESSAGE_KEY) || "[]"));
-        })
-        .catch(() => setError("저장된 정보를 불러오지 못했습니다. 다시 시도해 주세요."))
-        .finally(() => setLoading(false));
-    }, 550);
-    return () => window.clearTimeout(timer);
-  }, []);
-
-  const isValid = useMemo(() => form.sport.trim().length > 0 && Number(form.duration) >= 15 && Number(form.weight) >= 30 && Number(form.temperature) >= -10 && Number(form.temperature) <= 50, [form]);
-  const updatePlanStorage = (next: Plan[]) => { setPlans(next); localStorage.setItem(PLAN_KEY, JSON.stringify(next)); };
-
-  async function createPlan(event: FormEvent) {
-    event.preventDefault();
-    if (!isValid) { setError("입력값을 확인해 주세요. 운동은 15분 이상, 체중은 30kg 이상 입력해야 합니다."); return; }
-    setSubmitting(true); setError("");
-    const input = { sport: form.sport.trim(), duration: Number(form.duration), weight: Number(form.weight), temperature: Number(form.temperature), sweat: form.sweat };
-    const plan = { id: crypto.randomUUID(), ...input, ...calculatePlan(input), status: "planned" as PlanStatus, createdAt: new Date().toISOString() };
-    try {
-      const response = await fetch("/api/plans", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(plan) });
-      if (!response.ok) throw new Error();
-      updatePlanStorage([plan, ...plans]);
-      setSelected(plan); setTab("history");
-    } catch { setError("추천 계획을 만들지 못했습니다. 네트워크를 확인하고 다시 시도해 주세요."); }
-    finally { setSubmitting(false); }
-  }
-
-  function markDone(plan: Plan) {
-    const next = plans.map((item) => item.id === plan.id ? { ...item, status: "done" as PlanStatus } : item);
-    updatePlanStorage(next); setSelected(next.find((item) => item.id === plan.id) || null);
-  }
-
-  async function sendMessage(event: FormEvent) {
-    event.preventDefault();
-    if (!message.trim()) return;
-    const draft = { id: crypto.randomUUID(), content: message.trim(), createdAt: new Date().toISOString() };
-    try {
-      const response = await fetch("/api/messages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(draft) });
-      if (!response.ok) throw new Error();
-      const next = [...messages, draft]; setMessages(next); localStorage.setItem(MESSAGE_KEY, JSON.stringify(next)); setMessage("");
-    } catch { setError("메시지를 보내지 못했습니다. 입력한 내용은 그대로 유지했습니다."); }
-  }
-
-  const retry = () => { setError(""); window.location.reload(); };
-  return <main className="app-shell">
-    <header className="topbar"><div className="brand-mark">💧</div><div><p className="eyebrow">HYDRO PACE</p><h1>나만의 수분 페이스</h1></div><span className="status-dot">오늘도 준비 완료</span></header>
-    <section className="hero"><div className="runner-art" aria-hidden="true"><div className="runner-shadow" /><div className="runner-figure"><i className="runner-head" /><i className="runner-torso" /><i className="runner-arm arm-back" /><i className="runner-arm arm-front" /><i className="runner-leg leg-back" /><i className="runner-leg leg-front" /></div></div><p>운동 전에, 딱 맞게.</p><h2>흘릴 땀을 미리<br /><em>채워볼까요?</em></h2><span>운동 조건을 바탕으로 오늘의 수분 페이스를 제안해요.</span></section>
-    <nav className="tabs" aria-label="서비스 메뉴">
-      <button className={tab === "plan" ? "active" : ""} onClick={() => setTab("plan")}>추천 만들기</button>
-      <button className={tab === "history" ? "active" : ""} onClick={() => { setTab("history"); setSelected(null); }}>내 기록 <b>{plans.length}</b></button>
-      <button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>문의하기</button>
-    </nav>
-    {error && <div className="notice error" role="alert"><span>{error}</span><button onClick={retry}>다시 시도</button></div>}
-    {loading ? <Loading /> : tab === "plan" ? <PlanForm form={form} setForm={setForm} isValid={isValid} submitting={submitting} createPlan={createPlan} /> : tab === "history" ? <History plans={plans} selected={selected} setSelected={setSelected} markDone={markDone} /> : <Chat messages={messages} message={message} setMessage={setMessage} sendMessage={sendMessage} />}
-    <footer>의료 조언이 아닌 운동 수분 관리 참고용 안내입니다. 질환·복용 약물이 있거나 어지럼증 등 이상 증상이 있으면 전문가와 상담하세요.</footer>
-  </main>;
-}
-
-function PlanForm({ form, setForm, isValid, submitting, createPlan }: { form: { sport: string; duration: string; weight: string; temperature: string; sweat: SweatLevel }; setForm: React.Dispatch<React.SetStateAction<{ sport: string; duration: string; weight: string; temperature: string; sweat: SweatLevel }>>; isValid: boolean; submitting: boolean; createPlan: (e: FormEvent) => Promise<void> }) {
-  const field = (key: keyof typeof form, value: string) => setForm((current) => ({ ...current, [key]: value }));
-  return <section className="card form-card"><div className="section-heading"><span className="step">01</span><div><h2>오늘의 운동 조건</h2><p>정확할수록 더 나은 페이스를 만들 수 있어요.</p></div></div><form onSubmit={createPlan} noValidate>
-    <label>운동 종목<input value={form.sport} maxLength={20} onChange={(e) => field("sport", e.target.value)} placeholder="예: 러닝" /></label>
-    <div className="two-col"><label>운동 시간 (분)<input type="number" inputMode="numeric" min="15" value={form.duration} onChange={(e) => field("duration", e.target.value)} /></label><label>체중 (kg)<input type="number" inputMode="decimal" min="30" value={form.weight} onChange={(e) => field("weight", e.target.value)} /></label></div>
-    <label>예상 기온 (°C)<input type="number" inputMode="numeric" min="-10" max="50" value={form.temperature} onChange={(e) => field("temperature", e.target.value)} /></label>
-    <fieldset><legend>평소 땀 배출량</legend><div className="segmented">{(["low", "medium", "high"] as SweatLevel[]).map((level) => <button type="button" key={level} className={form.sweat === level ? "selected" : ""} onClick={() => field("sweat", level)}>{sweatLabels[level]}</button>)}</div></fieldset>
-    {!isValid && <p className="form-help">운동 시간 15분 이상, 체중 30kg 이상을 입력해 주세요.</p>}
-    <button className="primary" disabled={!isValid || submitting} type="submit">{submitting ? "페이스 계산 중…" : "내 수분 페이스 만들기"}<span>→</span></button>
-  </form></section>;
-}
-
-function History({ plans, selected, setSelected, markDone }: { plans: Plan[]; selected: Plan | null; setSelected: (plan: Plan | null) => void; markDone: (plan: Plan) => void }) {
-  if (selected) return <PlanDetail plan={selected} onBack={() => setSelected(null)} onDone={() => markDone(selected)} />;
-  if (!plans.length) return <section className="empty card"><div>◌</div><h2>아직 만든 페이스가 없어요</h2><p>첫 운동의 수분 계획을 만들어 보세요.</p><button className="text-button" onClick={() => document.querySelector<HTMLButtonElement>(".tabs button")?.click()}>추천 만들기 →</button></section>;
-  return <section className="history"><div className="section-heading"><span className="step">02</span><div><h2>내 수분 페이스</h2><p>저장된 계획은 새로고침해도 유지돼요.</p></div></div>{plans.map((plan) => <button className="plan-row" key={plan.id} onClick={() => setSelected(plan)}><div className="sport-icon">{plan.sport === "러닝" ? "🏃" : "⚡"}</div><div><strong>{plan.sport} · {plan.duration}분</strong><span>{new Date(plan.createdAt).toLocaleDateString("ko-KR")} · {plan.water.toLocaleString()}mL</span></div><i className={plan.status}>{plan.status === "done" ? "완료" : "예정"}</i><b>›</b></button>)}</section>;
-}
-
-function PlanDetail({ plan, onBack, onDone }: { plan: Plan; onBack: () => void; onDone: () => void }) {
-  return <section className="detail"><button className="back" onClick={onBack}>← 기록으로</button><div className="detail-hero"><p>{plan.sport} · {plan.duration}분 · {plan.temperature}°C</p><h2>오늘, <em>{plan.water.toLocaleString()}mL</em>를<br />나눠 마셔요.</h2><span>{sweatLabels[plan.sweat]} 기준으로 계산한 참고용 계획이에요.</span></div><div className="metric"><span>💧 권장 수분</span><strong>{plan.water.toLocaleString()} <small>mL</small></strong><p>운동 전후·중간에 나눠 섭취해 보세요.</p></div><div className="timeline"><h3>이렇게 나눠 드세요</h3><div><span>운동 전</span><b>{plan.before}mL</b><p>시작 30~60분 전</p></div><div><span>운동 중</span><b>{plan.during}mL</b><p>15~20분 간격으로</p></div><div><span>운동 후</span><b>{plan.after}mL</b><p>천천히 보충하기</p></div></div>{plan.electrolyte > 0 && <div className="electrolyte"><span>⚡ 전해질도 함께</span><b>약 {plan.electrolyte}mg 나트륨</b><p>1시간 이상 운동·더운 날·땀을 많이 흘릴 때는 전해질 음료를 고려해 보세요.</p></div>}<a className="source" href="https://pubmed.ncbi.nlm.nih.gov/17277604/" target="_blank" rel="noreferrer">수분 섭취 참고 자료: ACSM 운동 수분 보충 가이드 ↗</a>{plan.status === "done" ? <div className="complete">✓ 오늘의 수분 보충을 기록했어요. 수고했어요!</div> : <button className="primary" onClick={onDone}>섭취 완료로 기록하기 <span>✓</span></button>}</section>;
-}
-
-function Chat({ messages, message, setMessage, sendMessage }: { messages: ChatMessage[]; message: string; setMessage: (value: string) => void; sendMessage: (event: FormEvent) => Promise<void> }) {
-  return <section className="chat card"><div className="section-heading"><span className="step">03</span><div><h2>궁금한 점이 있나요?</h2><p>Hydro Pace 팀에게 메시지를 남겨 주세요.</p></div></div><div className="messages">{messages.length ? messages.map((item) => <div className="bubble" key={item.id}><p>{item.content}</p><span>{new Date(item.createdAt).toLocaleString("ko-KR", { hour: "2-digit", minute: "2-digit" })}</span></div>) : <div className="empty-chat"><span>💬</span><p>아직 대화가 없습니다.<br />먼저 말을 건네보세요.</p></div>}</div><form className="message-form" onSubmit={sendMessage}><input value={message} maxLength={300} onChange={(event) => setMessage(event.target.value)} placeholder="예: 운동 중 물을 얼마나 마셔야 하나요?" /><button aria-label="메시지 보내기" disabled={!message.trim()}>↑</button></form></section>;
-}
-
-function Loading() { return <section className="card skeleton"><div /><div /><div /><div /></section>; }
-
-
-
-
+type Sweat = "low" | "medium" | "high";
+type Plan = { id:string; sport:string; duration:number; weight:number; temperature:number; sweat:Sweat; water:number; calories:number; status:"planned"|"done"; createdAt:string };
+type Tab = "plan"|"history"|"products"|"pricing";
+const SESSION="hydro-pace-demo-session", PLANS="hydro-pace-plans";
+const products=[{icon:"⚡",name:"Pace Electrolyte",type:"전해질 드링크",note:"더운 날·60분 이상 운동에 추천",tone:"blue"},{icon:"◉",name:"Pace Tabs",type:"전해질 정제",note:"물 한 병에 가볍게 추가",tone:"violet"},{icon:"💧",name:"Pace Bottle",type:"스포츠 보틀",note:"15~20분 섭취 리듬 체크",tone:"mint"}];
+const sweatLabel:Record<Sweat,string>={low:"적게 흘려요",medium:"보통이에요",high:"많이 흘려요"};
+function calc(sport:string,duration:number,weight:number,temp:number,sweat:Sweat){const rate=sweat==="high"?.8:sweat==="medium"?.6:.4;const water=Math.round(Math.max(.35,Math.min(.9,rate+(temp>=28?.1:temp<=12?-.05:0)+(weight>=80?.05:weight<55?-.05:0)))*duration/60*1000/10)*10;const met:Record<string,number>={"러닝":9.8,"자전거":7.5,"수영":8.3,"축구":7,"근력 운동":5};return {water,calories:Math.round((met[sport]??6)*3.5*weight/200*duration)}}
+export default function Home(){const [user,setUser]=useState<string|undefined>();const [tab,setTab]=useState<Tab>("plan");const [plans,setPlans]=useState<Plan[]>([]);const [selected,setSelected]=useState<Plan|undefined>();const [form,setForm]=useState({sport:"러닝",duration:"60",weight:"65",temperature:"22",sweat:"medium" as Sweat});useEffect(()=>{setUser(localStorage.getItem(SESSION)||undefined);setPlans(JSON.parse(localStorage.getItem(PLANS)||"[]"))},[]);const valid=useMemo(()=>form.sport.trim().length>0&&Number(form.duration)>=15&&Number(form.weight)>=30&&Number(form.temperature)>=-10&&Number(form.temperature)<=50,[form]);const enter=(name:string)=>{localStorage.setItem(SESSION,name);setUser(name)};const save=(next:Plan[])=>{setPlans(next);localStorage.setItem(PLANS,JSON.stringify(next))};function create(e:FormEvent){e.preventDefault();if(!valid)return;const n={sport:form.sport.trim(),duration:Number(form.duration),weight:Number(form.weight),temperature:Number(form.temperature),sweat:form.sweat};const p:Plan={id:crypto.randomUUID(),...n,...calc(n.sport,n.duration,n.weight,n.temperature,n.sweat),status:"planned",createdAt:new Date().toISOString()};save([p,...plans]);setSelected(p);setTab("history")}if(!user)return <Login onEnter={enter}/>;const done=()=>{if(!selected)return;const next=plans.map(p=>p.id===selected.id?{...p,status:"done" as const}:p);save(next);setSelected(next.find(p=>p.id===selected.id))};return <main className="app-shell"><header><div className="brand">💧</div><div><small>HYDRO PACE</small><h1>나만의 수분 페이스</h1></div><span className="user">{user} ●</span></header><section className="hero"><img src="/hydro-pace-runner.png" alt="물병을 든 러너 실루엣"/><p>운동 전에, 딱 맞게.</p><h2>흘릴 땀을 미리<br/><em>채워볼까요?</em></h2><span>운동 조건을 바탕으로 오늘의 수분 페이스를 제안해요.</span></section><nav>{([['plan','추천 만들기'],['history',`내 기록 ${plans.length}`],['products','추천 제품'],['pricing','요금제']] as [Tab,string][]).map(([id,label])=><button key={id} className={tab===id?'active':''} onClick={()=>{setTab(id);if(id!=="history")setSelected(undefined)}}>{label}</button>)}</nav>{tab==="plan"&&<><section className="card"><div className="heading"><b>01</b><div><h3>오늘의 운동 조건</h3><p>정확할수록 더 나은 페이스를 만들 수 있어요.</p></div></div><form onSubmit={create}><label>운동 종목<input value={form.sport} onChange={e=>setForm({...form,sport:e.target.value})}/></label><div className="two"><label>운동 시간 (분)<input type="number" min="15" value={form.duration} onChange={e=>setForm({...form,duration:e.target.value})}/></label><label>체중 (kg)<input type="number" min="30" value={form.weight} onChange={e=>setForm({...form,weight:e.target.value})}/></label></div><label>예상 기온 (°C)<input type="number" value={form.temperature} onChange={e=>setForm({...form,temperature:e.target.value})}/></label><fieldset><legend>평소 땀 배출량</legend><div className="segments">{(["low","medium","high"] as Sweat[]).map(s=><button type="button" className={s===form.sweat?'selected':''} onClick={()=>setForm({...form,sweat:s})} key={s}>{sweatLabel[s]}</button>)}</div></fieldset>{!valid&&<p className="error">운동 시간 15분 이상, 체중 30kg 이상을 입력해 주세요.</p>}<button className="primary" disabled={!valid}>내 수분 페이스 만들기 <span>→</span></button></form></section><ProductTeaser open={()=>setTab("products")}/></>}{tab==="history"&&(selected?<Detail plan={selected} done={done} back={()=>setSelected(undefined)} pricing={()=>setTab("pricing")}/>:<section className="history">{plans.length?plans.map(p=><button className="row" key={p.id} onClick={()=>setSelected(p)}><i>{p.sport==="러닝"?"🏃":"⚡"}</i><span><b>{p.sport} · {p.duration}분</b><small>{new Date(p.createdAt).toLocaleDateString("ko-KR")} · {p.water}mL · {p.calories}kcal</small></span><em>{p.status==="done"?"완료":"예정"}</em>›</button>):<section className="empty card"><div>◌</div><h3>아직 만든 페이스가 없어요</h3><p>첫 운동의 수분 계획을 만들어 보세요.</p><button onClick={()=>setTab("plan")}>추천 만들기 →</button></section>}</section>)}{tab==="products"&&<Products pricing={()=>setTab("pricing")}/>} {tab==="pricing"&&<Pricing/>}<footer>운동 수분 관리 참고용 발표 데모입니다. 이상 증상이 있으면 전문가와 상담하세요.</footer></main>}
+function Login({onEnter}:{onEnter:(n:string)=>void}){const [signup,setSignup]=useState(false),[name,setName]=useState(""),[email,setEmail]=useState(""),[password,setPassword]=useState(""),[error,setError]=useState("");function submit(e:FormEvent){e.preventDefault();if(!email.includes("@")||password.length<4||(signup&&!name.trim()))return setError("필수 정보와 4자 이상 비밀번호를 입력해 주세요.");onEnter(signup?name.trim():email.split("@")[0])}return <main className="login"><section><div className="login-brand">💧 <b>HYDRO PACE</b></div><h1>{signup?'나만의 수분 루틴을\n만들어 볼까요?':'오늘의 페이스를\n시작해 볼까요?'}</h1><p>발표용 데모입니다. 정보는 이 브라우저에만 저장됩니다.</p><form onSubmit={submit}>{signup&&<label>이름<input value={name} onChange={e=>setName(e.target.value)} placeholder="예: 민지"/></label>}<label>이메일<input value={email} type="email" onChange={e=>setEmail(e.target.value)} placeholder="runner@example.com"/></label><label>비밀번호<input value={password} type="password" onChange={e=>setPassword(e.target.value)} placeholder="4자 이상 입력"/></label>{error&&<p className="error">{error}</p>}<button className="primary">{signup?'회원가입하기':'로그인하기'} <span>→</span></button></form><button className="guest" onClick={()=>onEnter("게스트 러너")}>비회원으로 계속하기 <span>→</span></button><div className="switch">{signup?'이미 계정이 있나요?':'처음이신가요?'} <button onClick={()=>{setSignup(!signup);setError("")}}>{signup?'로그인':'회원가입'}</button></div></section></main>}
+function ProductTeaser({open}:{open:()=>void}){return <section className="teaser"><div><small>TODAY'S PICK</small><h3>오늘 추천하는 제품</h3></div><button onClick={open}>제품 더보기 ›</button><div className="product-grid">{products.slice(0,2).map(p=><article className={p.tone} key={p.name}><i>{p.icon}</i><small>{p.type}</small><b>{p.name}</b></article>)}</div></section>}
+function Detail({plan,done,back,pricing}:{plan:Plan;done:()=>void;back:()=>void;pricing:()=>void}){const electrolyte=plan.duration>=60||plan.sweat==="high"||plan.temperature>=28;return <section className="detail"><button className="back" onClick={back}>← 기록으로</button><div className="detail-hero"><small>{plan.sport} · {plan.duration}분 · {plan.temperature}°C</small><h2>오늘, <em>{plan.water}mL</em>를<br/>나눠 마셔요.</h2><p>{sweatLabel[plan.sweat]} 기준으로 계산한 참고용 계획이에요.</p></div>{plan.status==="done"&&<div className="calories"><p>오늘 운동으로 소모한 칼로리</p><strong>{plan.calories}<small> kcal</small></strong><span>{plan.sport} {plan.duration}분 · 체중 {plan.weight}kg 기준 추정치</span><b>섭취 완료 기록 ✓</b></div>}<div className="metric"><span>💧 권장 수분</span><strong>{plan.water}<small>mL</small></strong><p>운동 전후·중간에 나눠 섭취해 보세요.</p></div><div className="timeline"><h3>이렇게 나눠 드세요</h3><p><b>운동 전</b>{Math.round(plan.water*.2)}mL <small>시작 30~60분 전</small></p><p><b>운동 중</b>{Math.round(plan.water*.6)}mL <small>15~20분 간격으로</small></p><p><b>운동 후</b>{Math.round(plan.water*.2)}mL <small>천천히 보충하기</small></p></div>{electrolyte&&<div className="electrolyte">⚡ <b>전해질도 함께</b><p>1시간 이상 운동·더운 날에는 전해질 음료를 고려해 보세요.</p></div>}{plan.status==="done"?<button className="outline" onClick={pricing}>더 정밀한 분석 살펴보기</button>:<button className="primary" onClick={done}>섭취 완료로 기록하기 <span>✓</span></button>}</section>}
+function Products({pricing}:{pricing:()=>void}){return <section className="products"><div className="heading"><b>03</b><div><h3>오늘의 수분 파트너</h3><p>운동 조건에 맞춘 발표용 예시 제품이에요.</p></div></div>{products.map(p=><article className={`product ${p.tone}`} key={p.name}><i>{p.icon}</i><span><small>{p.type}</small><h3>{p.name}</h3><p>{p.note}</p></span><b>추천</b></article>)}<div className="plus-note"><b>더 세밀한 추천이 필요하신가요?</b><p>나의 운동 데이터를 더 촘촘하게 반영하는 정밀 분석을 확인해 보세요.</p><button onClick={pricing}>월 9,900원 요금제 보기 →</button></div></section>}
+function Pricing(){return <section className="pricing"><div className="pricing-hero"><small>HYDRO PACE PLUS</small><h2>운동마다 더 <em>정교한</em><br/>수분 페이스.</h2><p>단순 권장량을 넘어, 내 운동 데이터를 더 촘촘하게 살펴봐요.</p></div><div className="price"><small>월 구독</small><strong>9,900<em>원 / 월</em></strong><p>발표용 데모 · 실제 결제는 진행되지 않습니다.</p><button className="primary">Plus 플랜 체험하기 <span>→</span></button></div><h3>Plus에서 더 정확해지는 이유</h3>{[["01","운동 강도별 수분 곡선","시간대·운동 강도에 따라 마실 양과 시점을 더 세밀하게 나눠 보여줘요."],["02","날씨·발한 패턴 반영","기온과 평소 땀 배출 습관을 함께 반영해 전해질 필요도를 안내해요."],["03","운동 후 회복 리포트","섭취 완료 기록과 예상 칼로리를 바탕으로 다음 운동 페이스를 비교해요."],["04","추천 제품 상세 가이드","운동 상황별 제품 활용 방법을 알려줘요."]].map(x=><article className="feature" key={x[0]}><b>{x[0]}</b><span><strong>{x[1]}</strong><p>{x[2]}</p></span></article>)}<p className="disclaimer">건강·의료 진단 서비스가 아니며, 제안값은 운동 수분 관리 참고용입니다.</p></section>}
