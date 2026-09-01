@@ -5,7 +5,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 type Sweat = "low" | "medium" | "high";
 type Plan = { id:string; sport:string; duration:number; weight:number; temperature:number; sweat:Sweat; water:number; calories:number; status:"planned"|"done"; createdAt:string };
 type Tab = "plan"|"history"|"products"|"pricing";
-const SESSION="hydro-pace-demo-session", PLANS="hydro-pace-plans";
+const SESSION="smart-hydration-demo-session-v2", PLANS="hydro-pace-plans";
 const products=[{icon:"⚡",name:"Pace Electrolyte",type:"전해질 드링크",note:"더운 날·60분 이상 운동에 추천",tone:"blue"},{icon:"◉",name:"Pace Tabs",type:"전해질 정제",note:"물 한 병에 가볍게 추가",tone:"violet"},{icon:"💧",name:"Pace Bottle",type:"스포츠 보틀",note:"15~20분 섭취 리듬 체크",tone:"mint"}];
 const sweatLabel:Record<Sweat,string>={low:"적게 흘려요",medium:"보통이에요",high:"많이 흘려요"};
 function weatherText(code:number){if(code===0)return "맑음";if([1,2].includes(code))return "대체로 맑음";if(code===3)return "흐림";if([45,48].includes(code))return "안개";if([51,53,55,56,57].includes(code))return "이슬비";if([61,63,65,66,67,80,81,82].includes(code))return "비";if([71,73,75,77,85,86].includes(code))return "눈";if([95,96,99].includes(code))return "뇌우";return "날씨 정보 없음"}function calc(sport:string,duration:number,weight:number,temp:number,sweat:Sweat){const rate=sweat==="high"?.8:sweat==="medium"?.6:.4;const water=Math.round(Math.max(.35,Math.min(.9,rate+(temp>=28?.1:temp<=12?-.05:0)+(weight>=80?.05:weight<55?-.05:0)))*duration/60*1000/10)*10;const met:Record<string,number>={"러닝":9.8,"자전거":7.5,"수영":8.3,"축구":7,"근력 운동":5};return {water,calories:Math.round((met[sport]??6)*3.5*weight/200*duration)}}
